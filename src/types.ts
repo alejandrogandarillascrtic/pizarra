@@ -12,6 +12,7 @@ export type ItemType =
   | 'video'
   | 'link'
   | 'embed'
+  | 'html'
 
 /** Subtipo de archivo para tarjetas de documento */
 export type FileKind = 'pdf' | 'doc' | 'sheet' | 'slides' | 'text' | 'archive' | 'audio' | 'design' | 'other'
@@ -58,6 +59,7 @@ export interface Item {
   title?: string
   desc?: string
   favicon?: string
+  html?: string // código HTML incrustado (pegado o editado en el tablero)
   uploading?: boolean // solo local, mientras sube
 }
 

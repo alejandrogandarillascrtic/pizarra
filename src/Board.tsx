@@ -9,11 +9,13 @@ import {
 } from './geometry'
 import { Icon } from './icons'
 import { rememberBoard } from './recent'
+import { interpretWheel, loadNav, saveNav, type NavSettings } from './nav'
+import NavPanel from './NavPanel'
 import { MediaCtx } from './MediaView'
-import Viewer, { UrlDialog } from './Viewer'
+import Viewer, { HtmlDialog, UrlDialog } from './Viewer'
 import {
   MAX_BYTES, asUrl, classify, downloadUrl, embedFor, fetchPreview, fetchRemoteFile, heicToJpeg, hostOf, iframeSrc,
-  imageSize, isMedia, isOfficeViewable, isSheetImportable, keepsAspect, limitImage, loadPdf, officeThumbnail, pdfPageBlob,
+  HTML_INLINE_MAX, htmlText, htmlTitle, looksLikeHtml, imageSize, isMedia, isOfficeViewable, isSheetImportable, keepsAspect, limitImage, loadPdf, officeThumbnail, pdfPageBlob,
   sheetRows, textSnippet, uploadBlob, videoPoster, type EmbedInfo,
 } from './media'
 
@@ -78,12 +80,22 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [penColor, setPenColor] = useState(INK_COLORS[0])
   const [spaceDown, setSpaceDown] = useState(false)
+  const [nav, setNavState] = useState<NavSettings>(loadNav)
+  const navRef = useRef(nav)
+  navRef.current = nav
+  const setNav = (n: NavSettings) => {
+    saveNav(n)
+    setNavState(n)
+  }
+  const [navOpen, setNavOpen] = useState(false)
+  const rightPan = useRef(false)
   const [toast, setToast] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
   const [help, setHelp] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [viewerId, setViewerId] = useState<string | null>(null)
   const [urlDialog, setUrlDialog] = useState(false)
+  const [htmlDialog, setHtmlDialog] = useState<{ id?: string; code?: string } | null>(null)
   const [uploadMenu, setUploadMenu] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [progress, setProgress] = useState<string | null>(null)
@@ -118,12 +130,14 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
     return screenToWorld(e.clientX - r.left, e.clientY - r.top)
   }
 
+  const clampZ = (z: number) => Math.min(navRef.current.maxZoom / 100, Math.max(navRef.current.minZoom / 100, z))
   const zoomAt = (sx: number, sy: number, z: number) => {
-    z = Math.min(8, Math.max(0.05, z))
+    z = clampZ(z)
     const w = screenToWorld(sx, sy)
     setCam({ x: sx - w.x * z, y: sy - w.y * z, z })
   }
 
+  const stepFactor = () => 1 + navRef.current.buttonStep / 100
   const zoomBy = (f: number) => {
     const r = vpRef.current!.getBoundingClientRect()
     zoomAt(r.width / 2, r.height / 2, camRef.current.z * f)
@@ -159,14 +173,15 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
     const vp = vpRef.current
     if (!vp) return
     const onWheel = (e: WheelEvent) => {
+      // dentro de un iframe/video activo la rueda le pertenece a ese contenido
+      if ((e.target as HTMLElement).closest?.('.item.active, .nav-panel, .viewer, .modal')) return
       e.preventDefault()
       const r = vp.getBoundingClientRect()
-      if (e.ctrlKey || e.metaKey) {
-        zoomAt(e.clientX - r.left, e.clientY - r.top, camRef.current.z * Math.exp(-e.deltaY * 0.0085))
-      } else {
+      const a = interpretWheel(e, navRef.current)
+      if (a.kind === 'zoom') zoomAt(e.clientX - r.left, e.clientY - r.top, camRef.current.z * a.factor)
+      else {
         const c = camRef.current
-        const k = e.deltaMode === 1 ? 16 : 1
-        setCam({ ...c, x: c.x - e.deltaX * k, y: c.y - e.deltaY * k })
+        setCam({ ...c, x: c.x - a.dx, y: c.y - a.dy })
       }
     }
     vp.addEventListener('wheel', onWheel, { passive: false })
@@ -344,6 +359,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
           size = fitSize(d.w, d.h)
         } else if (c.cls === 'heic') size = fitSize(800, 600)
         else if (c.cls === 'video') size = fitSize(640, 360)
+        else if (c.cls === 'html') size = fitSize(800, 596, 900)
         else if (c.kind === 'pdf') size = { w: 320, h: 500 }
         else if (c.kind === 'audio') size = { w: 300, h: 190 }
         else size = { w: 280, h: 300 }
@@ -363,7 +379,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
     plans.forEach((p, k) => {
       const id = nanoid(10)
       ids.push(id)
-      const type: Item['type'] = p.c.cls === 'image' || p.c.cls === 'heic' ? 'image' : p.c.cls === 'video' ? 'video' : 'file'
+      const type: Item['type'] = p.c.cls === 'image' || p.c.cls === 'heic' ? 'image' : p.c.cls === 'video' ? 'video' : p.c.cls === 'html' ? 'html' : 'file'
       patch[id] = {
         id, type, x: pos[k].x, y: pos[k].y, w: p.size.w, h: p.size.h, z: ++max, color: '#ffffff',
         name: p.file.name, mime: p.file.type, size: p.file.size, fileKind: p.c.kind, src: p.local, uploading: true, author: me.name,
@@ -411,6 +427,11 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         return { src, name: file.name, mime: file.type, size: file.size, w, h: Math.round((w * d.h) / Math.max(d.w, 1)) }
       }
       return { src, mime: file.type, size: file.size }
+    }
+    if (c.cls === 'html') {
+      const code = await file.text()
+      const src = await uploadBlob(boardId, file, file.name, 'text/html')
+      return { src, html: code.length <= HTML_INLINE_MAX ? code : undefined, title: htmlTitle(code) || file.name.replace(/\.x?html?$/i, '') }
     }
     if (c.cls === 'video') {
       const poster = await videoPoster(file)
@@ -537,6 +558,75 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
     }
   }
 
+  /** Crea (o actualiza) un elemento HTML a partir de código. */
+  const saveHtml = async (code: string, id?: string) => {
+    const big = code.length > HTML_INLINE_MAX
+    const title = htmlTitle(code) || 'Página HTML'
+    if (id && itemsRef.current[id]) {
+      const cur = itemsRef.current[id]
+      const upd: Item = { ...cur, title: cur.title && cur.name ? cur.title : title, html: big ? undefined : code }
+      if (big) {
+        setProgress('Guardando HTML…')
+        try {
+          upd.src = await uploadBlob(boardId, new Blob([code], { type: 'text/html' }), `${cur.name || 'pagina'}.html`, 'text/html')
+        } finally {
+          setProgress(null)
+        }
+      }
+      apply({ [id]: upd })
+      return
+    }
+    const s = fitSize(800, 596, 900)
+    const at = freeSpot(viewCenter(), s.w, s.h)
+    reveal(at)
+    const nid = nanoid(10)
+    const it: Item = { id: nid, type: 'html', x: at.x - s.w / 2, y: at.y - s.h / 2, w: s.w, h: s.h, z: zRange().max + 1, color: '#ffffff', title, author: me.name }
+    if (big) {
+      setProgress('Guardando HTML…')
+      try {
+        it.src = await uploadBlob(boardId, new Blob([code], { type: 'text/html' }), 'pagina.html', 'text/html')
+        it.name = 'pagina.html'
+      } finally {
+        setProgress(null)
+      }
+    } else it.html = code
+    apply({ [nid]: it })
+    setSelected([nid])
+    setTool('select')
+  }
+
+  const editHtml = async (it: Item) => {
+    let code = it.html
+    if (code == null && it.src) {
+      try {
+        code = await htmlText(it.src)
+      } catch {
+        return flash('No se pudo abrir el código')
+      }
+    }
+    setHtmlDialog({ id: it.id, code: code || '' })
+  }
+
+  const downloadHtml = (it: Item) => {
+    if (it.src && it.html == null) return window.open(downloadUrl(it.src, it.name || 'pagina.html'), '_blank')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([it.html || ''], { type: 'text/html' }))
+    a.download = `${(it.title || 'pagina').replace(/[^\w\- ]+/g, '').trim() || 'pagina'}.html`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+  }
+
+  /** Convierte una tarjeta de enlace en la página web incrustada (si el sitio lo permite). */
+  const embedLink = (it: Item) => {
+    if (!it.url) return
+    const s = fitSize(960, 640, 1000)
+    const cx = it.x + it.w / 2, cy = it.y + it.h / 2
+    apply({
+      [it.id]: { ...it, type: 'embed', embed: it.url, provider: hostOf(it.url), x: cx - s.w / 2, y: cy - s.h / 2, w: s.w, h: s.h },
+    })
+    flash('Si la página queda en blanco, ese sitio no permite incrustarse')
+  }
+
   const rotateImage = (it: Item) => {
     const cx = it.x + it.w / 2, cy = it.y + it.h / 2
     apply({ [it.id]: { ...it, rotation: ((it.rotation || 0) + 90) % 360, w: it.h, h: it.w, x: cx - it.h / 2, y: cy - it.w / 2 } })
@@ -610,7 +700,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
 
   const openItem = (it: Item) => {
     if (it.type === 'link') window.open(it.url, '_blank', 'noopener')
-    else if (it.type === 'embed' || it.type === 'video' || (it.type === 'file' && it.fileKind === 'audio')) setActiveId(it.id)
+    else if (it.type === 'embed' || it.type === 'html' || it.type === 'video' || (it.type === 'file' && it.fileKind === 'audio')) setActiveId(it.id)
     else if (it.type === 'image' || it.type === 'file') setViewerId(it.id)
   }
 
@@ -678,7 +768,18 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
     const hitId = target.closest('[data-id]')?.getAttribute('data-id') || null
     const t = toolRef.current
 
-    if (e.button === 1 || spaceDown || t === 'hand') {
+    const n = navRef.current
+    const emptyCanvas = !hitId && !handle
+    if (
+      t === 'hand' ||
+      (e.button === 1 && n.panMiddle) ||
+      (e.button === 2 && n.panRight) ||
+      (spaceDown && n.panSpace) ||
+      (e.button === 0 && t === 'select' && emptyCanvas && n.leftDrag === 'pan' && !e.shiftKey)
+    ) {
+      if (e.button === 1) e.preventDefault()
+      if (e.button === 0 && t === 'select' && emptyCanvas && !e.shiftKey) setSelected([])
+      rightPan.current = e.button === 2
       drag.current = { mode: 'pan', sx: e.clientX, sy: e.clientY, cam: { ...camRef.current } }
       return
     }
@@ -744,7 +845,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         const [a, b] = [...pointers.current.values()]
         const r = vpRef.current!.getBoundingClientRect()
         const c = { x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top }
-        const z = Math.min(8, Math.max(0.05, d.cam.z * (Math.hypot(a.x - b.x, a.y - b.y) / d.d0)))
+        const z = clampZ(d.cam.z * (Math.hypot(a.x - b.x, a.y - b.y) / d.d0))
         const w = { x: (d.c0.x - d.cam.x) / d.cam.z, y: (d.c0.y - d.cam.y) / d.cam.z }
         setCam({ x: c.x - w.x * z, y: c.y - w.y * z, z })
         break
@@ -917,6 +1018,13 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
       }
       startEdit(id)
     } else if (toolRef.current === 'select') {
+      const mode = navRef.current.dblClick
+      if (mode === 'none') return
+      if (mode === 'zoom') {
+        const r = vpRef.current!.getBoundingClientRect()
+        zoomAt(e.clientX - r.left, e.clientY - r.top, camRef.current.z * stepFactor() * stepFactor())
+        return
+      }
       const p = evToWorld(e)
       const def = DEFAULTS.sticky
       const it = makeItem('sticky', { x: p.x - def.w / 2, y: p.y - def.h / 2, w: def.w, h: def.h })
@@ -984,14 +1092,15 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         if (s.length) cloneItems(s, 30, 30)
         return
       }
-      if (mod && (e.key === '=' || e.key === '+')) {
+      const plain = !mod && navRef.current.plainKeys
+      if ((mod || plain) && (e.key === '=' || e.key === '+')) {
         e.preventDefault()
-        zoomBy(1.2)
+        zoomBy(stepFactor())
         return
       }
-      if (mod && e.key === '-') {
+      if ((mod || plain) && (e.key === '-' || e.key === '_')) {
         e.preventDefault()
-        zoomBy(1 / 1.2)
+        zoomBy(1 / stepFactor())
         return
       }
       if (mod && e.key === '0') {
@@ -1070,6 +1179,10 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
       const files = [...(e.clipboardData?.files || [])]
       if (files.length) {
         addFiles(files, mid, true)
+        return
+      }
+      if (looksLikeHtml(text)) {
+        saveHtml(text)
         return
       }
       if (!text.trim().startsWith('{') && (iframeSrc(text) || asUrl(text))) {
@@ -1239,6 +1352,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
+        onMouseDown={(e) => e.button === 1 && e.preventDefault()}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
@@ -1316,8 +1430,18 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
                     {(m.type === 'video' || m.fileKind === 'audio') && (
                       <button className="ib wide" title="Reproducir (doble clic)" onClick={() => openItem(m)}><Icon name="play" size={16} /> Reproducir</button>
                     )}
-                    {m.type === 'embed' && (
+                    {(m.type === 'embed' || m.type === 'html') && (
                       <button className="ib wide" title="Interactuar (doble clic)" onClick={() => openItem(m)}>Interactuar</button>
+                    )}
+                    {m.type === 'html' && (
+                      <>
+                        <button className="ib" title="Pantalla completa" onClick={() => setViewerId(m.id)}><Icon name="eye" /></button>
+                        <button className="ib wide" title="Editar el código HTML" onClick={() => editHtml(m)}><Icon name="code" /> Código</button>
+                        <button className="ib" title="Descargar .html" onClick={() => downloadHtml(m)}><Icon name="download" /></button>
+                      </>
+                    )}
+                    {m.type === 'link' && (
+                      <button className="ib wide" title="Mostrar la página dentro del tablero" onClick={() => embedLink(m)}><Icon name="code" /> Incrustar página</button>
                     )}
                     {m.type === 'image' && (
                       <button className="ib" title="Rotar 90°" onClick={() => rotateImage(m)}><Icon name="rotate" /></button>
@@ -1331,7 +1455,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
                     {(m.type === 'link' || m.type === 'embed') && (
                       <a className="ib" title="Abrir en una pestaña nueva" href={m.url} target="_blank" rel="noreferrer"><Icon name="open" /></a>
                     )}
-                    {m.src && m.type !== 'link' && m.type !== 'embed' && (
+                    {m.src && m.type !== 'link' && m.type !== 'embed' && m.type !== 'html' && (
                       <a className="ib" title="Descargar" href={downloadUrl(m.src, m.name)} target="_blank" rel="noreferrer"><Icon name="download" /></a>
                     )}
                     <span className="sep" />
@@ -1386,6 +1510,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
               <button onClick={() => { fitAll(); setMenu(false) }}>Ajustar a la pantalla <kbd>⇧1</kbd></button>
               <button onClick={exportJson}>Exportar (.json)</button>
               <button onClick={importJson}>Importar (.json)</button>
+              <button onClick={() => { setNavOpen(true); setMenu(false) }}>Navegación y zoom…</button>
               <button onClick={() => { setHelp(true); setMenu(false) }}>Atajos de teclado <kbd>?</kbd></button>
               <a href="/" target="_blank" rel="noreferrer">Nuevo tablero ↗</a>
             </div>
@@ -1423,10 +1548,13 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
               <button onClick={() => { setUploadMenu(false); setUrlDialog(true) }}>
                 <Icon name="link" /> <span><strong>Desde una URL</strong><small>Páginas, YouTube, Figma, Google Docs, Maps, archivos…</small></span>
               </button>
+              <button onClick={() => { setUploadMenu(false); setHtmlDialog({}) }}>
+                <Icon name="code" /> <span><strong>Código HTML</strong><small>Pega o escribe una página; se ejecuta aislada en el tablero</small></span>
+              </button>
               <button onClick={() => { setUploadMenu(false); cameraInput.current?.click() }}>
                 <Icon name="camera" /> <span><strong>Tomar una foto</strong><small>Con la cámara del teléfono o tablet</small></span>
               </button>
-              <p>También puedes <b>arrastrar</b> archivos al tablero o <b>pegar</b> (Ctrl+V) imágenes y enlaces.</p>
+              <p>También puedes <b>arrastrar</b> archivos (incluidos <b>.html</b>) al tablero o <b>pegar</b> (Ctrl+V) imágenes, enlaces y código HTML.</p>
             </div>
           )}
         </div>
@@ -1443,16 +1571,22 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         </div>
       )}
 
+      {nav.showZoomBar ? (
       <div className="zoom">
-        <button className="ib" onClick={() => zoomBy(1 / 1.2)} title="Alejar">−</button>
+        <button className="ib" onClick={() => zoomBy(1 / stepFactor())} title={`Alejar ${nav.buttonStep}%`}>−</button>
         <button className="zv" onClick={() => { const r = vpRef.current!.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1) }} title="100%">
           {Math.round(cam.z * 100)}%
         </button>
-        <button className="ib" onClick={() => zoomBy(1.2)} title="Acercar">+</button>
+        <button className="ib" onClick={() => zoomBy(stepFactor())} title={`Acercar ${nav.buttonStep}%`}>+</button>
         <span className="sep" />
         <button className="ib" onClick={fitAll} title="Ajustar a la pantalla (Shift+1)"><Icon name="fit" /></button>
+        <button className={`ib${navOpen ? ' on' : ''}`} onClick={() => setNavOpen((v) => !v)} title="Navegación y zoom"><Icon name="gear" /></button>
         <button className="ib" onClick={() => setHelp(true)} title="Ayuda (?)">?</button>
       </div>
+      ) : (
+        <button className="zoom zoom-mini ib" onClick={() => setNavOpen((v) => !v)} title="Navegación y zoom"><Icon name="gear" /></button>
+      )}
+      {navOpen && <NavPanel value={nav} onChange={setNav} onClose={() => setNavOpen(false)} />}
 
       {status === 'loading' && <div className="loading">Cargando tablero…</div>}
       {status === 'ready' && sorted.length === 0 && (
@@ -1465,6 +1599,18 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
       {!progress && toast && <div className="toast">{toast}</div>}
       {help && <Help onClose={() => setHelp(false)} />}
       {viewerId && items[viewerId] && <Viewer item={items[viewerId]} onClose={() => setViewerId(null)} />}
+      {htmlDialog && (
+        <HtmlDialog
+          title={htmlDialog.id ? 'Editar HTML' : 'Nuevo HTML'}
+          initial={htmlDialog.code}
+          onClose={() => setHtmlDialog(null)}
+          onSave={(code) => {
+            const id = htmlDialog.id
+            setHtmlDialog(null)
+            saveHtml(code, id)
+          }}
+        />
+      )}
       {urlDialog && (
         <UrlDialog
           onClose={() => setUrlDialog(false)}
@@ -1515,8 +1661,9 @@ function Help({ onClose }: { onClose: () => void }) {
     ['L  P  F', 'Conector, lápiz, marco'],
     ['Doble clic', 'Nueva nota o editar texto'],
     ['Espacio + arrastrar', 'Mover lienzo'],
-    ['Ctrl + rueda / pellizco', 'Zoom'],
-    ['Rueda / dos dedos', 'Desplazar'],
+    ['Rueda / pellizco', 'Zoom o desplazar según ⚙ Navegación'],
+    ['Botón derecho o central + arrastrar', 'Mover lienzo (configurable)'],
+    ['+ / −', 'Acercar / alejar'],
     ['Shift + clic / arrastrar', 'Selección múltiple'],
     ['Ctrl+C / X / V', 'Copiar, cortar, pegar (también entre tableros)'],
     ['Ctrl+D', 'Duplicar'],
@@ -1526,7 +1673,7 @@ function Help({ onClose }: { onClose: () => void }) {
     ['Shift+1 · Ctrl+0', 'Ajustar a la pantalla · zoom 100%'],
     ['Pegar texto', 'Crea una nota por línea'],
     ['Arrastrar archivos', 'Imágenes, PDF, Office, video, audio…'],
-    ['Pegar imagen / enlace', 'Captura de pantalla, URL o código <iframe>'],
+    ['Pegar imagen / enlace / HTML', 'Captura, URL, código <iframe> o página HTML'],
     ['U', 'Subir archivo desde el dispositivo'],
     ['Doble clic en archivo', 'Ver, reproducir o interactuar'],
   ]

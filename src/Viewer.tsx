@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Item } from './types'
-import { PdfCanvas } from './MediaView'
-import { downloadUrl, fmtSize, isOfficeViewable, isTextLike, loadPdf, extOf } from './media'
+import { PdfCanvas, useHtmlCode } from './MediaView'
+import { HTML_SANDBOX, downloadUrl, fmtSize, isOfficeViewable, isTextLike, loadPdf, extOf } from './media'
 import { Icon } from './icons'
 
 export default function Viewer({ item, onClose }: { item: Item; onClose: () => void }) {
@@ -46,6 +46,7 @@ function Body({ item }: { item: Item }) {
         <img src={item.src} alt="" style={{ transform: item.rotation ? `rotate(${item.rotation}deg)` : undefined }} />
       </div>
     )
+  if (item.type === 'html') return <HtmlFull item={item} />
   if (item.type === 'video') return <video className="v-video" src={item.src} poster={item.thumb} controls autoPlay />
   if (item.type === 'embed') return <iframe className="v-frame" src={item.embed} allow="autoplay; encrypted-media; fullscreen; picture-in-picture" allowFullScreen />
   if (item.fileKind === 'pdf' && item.src) return <PdfPages src={item.src} start={item.page || 1} />
@@ -171,6 +172,78 @@ export function UrlDialog({ onSubmit, onClose }: { onSubmit: (url: string) => vo
           <button className="btn primary" disabled={!v.trim()}>Insertar</button>
         </div>
       </form>
+    </div>
+  )
+}
+
+function HtmlFull({ item }: { item: Item }) {
+  const code = useHtmlCode(item)
+  if (code == null) return <div className="v-center"><span className="spinner" /></div>
+  return <iframe className="v-frame" srcDoc={code} sandbox={HTML_SANDBOX} title={item.title || 'HTML'} />
+}
+
+const HTML_STARTER = `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Mi página</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; display: grid; place-items: center; min-height: 100vh;
+           background: linear-gradient(135deg, #e6ecff, #fff3c4); color: #1b1f3b; }
+    button { font: inherit; padding: 10px 18px; border-radius: 10px; border: 0; background: #3e63dd; color: #fff; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main style="text-align:center">
+    <h1>Hola equipo 👋</h1>
+    <p>Este HTML corre dentro del tablero.</p>
+    <button onclick="this.textContent = 'Clics: ' + (++window.n || (window.n = 1))">Haz clic</button>
+  </main>
+</body>
+</html>`
+
+/** Editor de código HTML con vista previa en vivo (aislada). */
+export function HtmlDialog({ initial, title, onSave, onClose }: { initial?: string; title: string; onSave: (code: string) => void; onClose: () => void }) {
+  const [code, setCode] = useState(initial ?? HTML_STARTER)
+  const [preview, setPreview] = useState(code)
+  useEffect(() => {
+    const t = setTimeout(() => setPreview(code), 350)
+    return () => clearTimeout(t)
+  }, [code])
+  return (
+    <div className="viewer-bg" onPointerDown={onClose}>
+      <div className="viewer html-editor" onPointerDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+        <div className="viewer-head">
+          <strong><Icon name="code" /> {title}</strong>
+          <span className="muted small">{(code.length / 1024).toFixed(1)} KB</span>
+          <span style={{ flex: 1 }} />
+          <button className="btn" onClick={onClose}>Cancelar</button>
+          <button className="btn primary" disabled={!code.trim()} onClick={() => onSave(code)}>Guardar en el tablero</button>
+        </div>
+        <div className="html-split">
+          <textarea
+            className="code"
+            spellCheck={false}
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Tab') {
+                e.preventDefault()
+                const el = e.currentTarget
+                const a = el.selectionStart, b = el.selectionEnd
+                const next = code.slice(0, a) + '  ' + code.slice(b)
+                setCode(next)
+                requestAnimationFrame(() => el.setSelectionRange(a + 2, a + 2))
+              }
+              if (e.key === 's' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault()
+                onSave(code)
+              }
+            }}
+          />
+          <iframe className="html-preview" srcDoc={preview} sandbox={HTML_SANDBOX} title="Vista previa" />
+        </div>
+      </div>
     </div>
   )
 }

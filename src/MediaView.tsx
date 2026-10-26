@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { Item } from './types'
-import { KIND_COLOR, KIND_LABEL, extOf, fmtSize, hostOf, loadPdf, renderPdfPage } from './media'
+import { HTML_SANDBOX, KIND_COLOR, KIND_LABEL, extOf, fmtSize, hostOf, htmlText, loadPdf, renderPdfPage } from './media'
+import { Icon } from './icons'
 
 export interface MediaApi {
   activeId: string | null
@@ -35,6 +36,8 @@ export function MediaView({ item, hover }: { item: Item; hover: boolean }) {
       return <EmbedView item={item} cls={cls} />
     case 'link':
       return <LinkView item={item} cls={cls} />
+    case 'html':
+      return <HtmlView item={item} cls={`${cls} item-embed`} />
     case 'file':
       return item.fileKind === 'pdf' ? <PdfView item={item} cls={cls} /> : <FileView item={item} cls={cls} />
     default:
@@ -105,6 +108,59 @@ function EmbedView({ item, cls }: { item: Item; cls: string }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** Código HTML del elemento: el incrustado o el del archivo subido. */
+export function useHtmlCode(item: Item) {
+  const [code, setCode] = useState<string | null>(item.html ?? null)
+  useEffect(() => {
+    if (item.html != null) {
+      setCode(item.html)
+      return
+    }
+    if (!item.src) return
+    let alive = true
+    htmlText(item.src)
+      .then((t) => alive && setCode(t))
+      .catch(() => alive && setCode('<p style="font:14px system-ui;color:#888;padding:16px">No se pudo cargar el HTML.</p>'))
+    return () => {
+      alive = false
+    }
+  }, [item.html, item.src])
+  return code
+}
+
+function HtmlView({ item, cls }: { item: Item; cls: string }) {
+  const { activeId } = useContext(MediaCtx)
+  const active = activeId === item.id
+  const code = useHtmlCode(item)
+  return (
+    <div className={`${cls}${active ? ' active' : ''}`} style={style(item)}>
+      <div className="embed-head" data-id={item.id}>
+        <span className="html-ico"><Icon name="code" size={14} /></span>
+        <span className="prov">HTML</span>
+        <span className="t">{item.title || item.name || 'Página'}</span>
+      </div>
+      <div className="embed-body">
+        {code != null && (
+          <iframe
+            srcDoc={code}
+            sandbox={HTML_SANDBOX}
+            title={item.title || 'HTML'}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            style={{ pointerEvents: active ? 'auto' : 'none', background: '#fff' }}
+          />
+        )}
+        {!active && !item.uploading && (
+          <div className="embed-cover" data-id={item.id}>
+            <span className="hint">Doble clic para interactuar</span>
+          </div>
+        )}
+      </div>
+      {item.uploading && <Uploading />}
     </div>
   )
 }

@@ -27,12 +27,13 @@ const KIND_BY_EXT: Record<string, FileKind> = {
   psd: 'design', ai: 'design', sketch: 'design', fig: 'design', tif: 'design', tiff: 'design', eps: 'design', dwg: 'design', dxf: 'design',
 }
 
-export type MediaClass = 'image' | 'heic' | 'video' | 'file'
+export type MediaClass = 'image' | 'heic' | 'video' | 'html' | 'file'
 
 export function classify(file: File): { cls: MediaClass; kind?: FileKind } {
   const e = ext(file.name)
   const t = file.type
   if (HEIC.includes(e) || t === 'image/heic' || t === 'image/heif') return { cls: 'heic' }
+  if (e === 'html' || e === 'htm' || e === 'xhtml' || t === 'text/html') return { cls: 'html' }
   if (WEB_IMAGES.includes(e) || (t.startsWith('image/') && !['image/tiff', 'image/vnd.adobe.photoshop'].includes(t) && !KIND_BY_EXT[e]))
     return { cls: 'image' }
   if (VIDEO.includes(e) || t.startsWith('video/')) return { cls: 'video' }
@@ -449,8 +450,43 @@ export const hostOf = (url: string) => {
 }
 
 export function isMedia(i: Item) {
-  return i.type === 'image' || i.type === 'file' || i.type === 'video' || i.type === 'link' || i.type === 'embed'
+  return i.type === 'image' || i.type === 'file' || i.type === 'video' || i.type === 'link' || i.type === 'embed' || i.type === 'html'
 }
 
 /** Tipos que conservan su proporción al redimensionar. */
 export const keepsAspect = (i: Item) => i.type === 'image' || i.type === 'video' || (i.type === 'file' && i.fileKind === 'pdf' && !!i.thumb)
+
+// ---------------------------------------------------------------------------
+// HTML: se muestra en un iframe aislado (sandbox sin same-origin), nunca en la app
+// ---------------------------------------------------------------------------
+
+export const HTML_INLINE_MAX = 200_000
+export const HTML_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals allow-pointer-lock allow-downloads'
+const htmlCache = new Map<string, Promise<string>>()
+
+export function htmlText(src: string): Promise<string> {
+  let p = htmlCache.get(src)
+  if (!p) {
+    p = fetch(src).then((r) => {
+      if (!r.ok) throw new Error(String(r.status))
+      return r.text()
+    })
+    p.catch(() => htmlCache.delete(src))
+    htmlCache.set(src, p)
+  }
+  return p
+}
+
+/** ¿El texto pegado parece una página o fragmento HTML (y no un <iframe> suelto)? */
+export function looksLikeHtml(text: string) {
+  const t = text.trim()
+  if (t.length < 15) return false
+  if (/^<!doctype html/i.test(t) || /^<html[\s>]/i.test(t)) return true
+  if (/^<iframe[\s>]/i.test(t) && (t.match(/</g) || []).length <= 3) return false
+  return /^<(div|section|main|svg|style|body|head|table|canvas|h1|p|ul|form|article|header|button|script)[\s>]/i.test(t) && /<\/\w+>\s*$/.test(t)
+}
+
+export function htmlTitle(code: string) {
+  const m = code.match(/<title[^>]*>([^<]{1,120})<\/title>/i) || code.match(/<h1[^>]*>([^<]{1,120})<\/h1>/i)
+  return m ? m[1].trim() : ''
+}

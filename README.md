@@ -30,11 +30,24 @@ Se pueden **arrastrar y soltar**, **pegar** (Ctrl+V) o subir desde el botón **S
 | Audio | MP3, WAV, M4A, OGG… | Reproductor en la tarjeta |
 | Otros | ZIP, PSD, AI, TXT, JSON… | Tarjeta de archivo con descarga |
 | Enlaces | Cualquier URL | **Tarjeta con imagen, título y descripción** (Open Graph) |
+| HTML | Archivos .html / .htm, código HTML pegado o escrito en el editor | Página viva aislada (iframe sandbox): sus scripts no pueden tocar el tablero; editor de código con vista previa, pantalla completa y descarga |
 | Incrustados | YouTube, Vimeo, Loom, Figma, Google Docs/Sheets/Slides/Forms/Drive/Maps, Spotify, SoundCloud, X, TikTok, Instagram, Canva, CodePen, Miro, Airtable, Typeform, GIPHY, Calendly y código `<iframe>` | Contenido vivo; doble clic para interactuar |
 
 También: pegar capturas de pantalla, arrastrar imágenes desde otra pestaña, tomar fotos con la cámara del teléfono e insertar archivos desde una URL. Límite: 50 MB por archivo.
 
 Funciona en móvil y tablet.
+
+### Navegación configurable
+
+En ⚙ (barra de zoom) o en el menú **⋯ → Navegación y zoom**, cada persona elige:
+
+- **Dispositivo**: automático, mouse (la rueda hace zoom) o trackpad (dos dedos desplazan, pellizcar hace zoom).
+- **Velocidad del zoom**, invertir zoom o desplazamiento, y límites (1 % a 3200 %).
+- **Botones + / −**: paso de 10 %, 20 %, 25 %, 50 % o ×2; teclas + y − sin Ctrl; mostrar u ocultar la barra.
+- **Mover el lienzo** con botón derecho, botón central, espacio, o el botón izquierdo sobre el lienzo vacío.
+- **Doble clic** en el lienzo: nueva nota, acercar o nada.
+
+Se guarda en el navegador de cada persona.
 
 Atajos: pulsa `?` dentro de un tablero.
 
