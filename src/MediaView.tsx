@@ -48,7 +48,7 @@ function RotatedImage({ item }: { item: Item }) {
   const st: React.CSSProperties = sideways
     ? { width: item.h, height: item.w, left: (item.w - item.h) / 2, top: (item.h - item.w) / 2, transform: `rotate(${r}deg)` }
     : { width: '100%', height: '100%', left: 0, top: 0, transform: r ? `rotate(${r}deg)` : undefined }
-  return <img className="media-img" src={item.src} alt={item.name || ''} draggable={false} decoding="async" style={st} />
+  return <img className="media-img" src={item.src} alt={item.name || ''} draggable={false} decoding="async" referrerPolicy="no-referrer" style={st} />
 }
 
 function VideoView({ item, cls }: { item: Item; cls: string }) {
@@ -85,7 +85,7 @@ function EmbedView({ item, cls }: { item: Item; cls: string }) {
   return (
     <div className={`${cls}${active ? ' active' : ''}`} style={style(item)}>
       <div className="embed-head" data-id={item.id}>
-        {item.favicon && <img src={item.favicon} alt="" onError={(e) => (e.currentTarget.style.display = 'none')} />}
+        {item.favicon && <img src={item.favicon} alt="" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.display = 'none')} />}
         <span className="prov">{item.provider}</span>
         <span className="t">{item.title || hostOf(item.url || '')}</span>
       </div>
@@ -114,16 +114,23 @@ function LinkView({ item, cls }: { item: Item; cls: string }) {
   const host = hostOf(item.url || '')
   return (
     <div className={cls} data-id={item.id} style={style(item)}>
-      {item.thumb && imgOk && (
+      {item.thumb && (
         <div className="link-img">
-          <img src={item.thumb} alt="" draggable={false} onError={() => setImgOk(false)} />
+          {imgOk ? (
+            <img src={item.thumb} alt="" draggable={false} referrerPolicy="no-referrer" onError={() => setImgOk(false)} />
+          ) : (
+            <div className="link-ph">
+              {item.favicon && <img src={item.favicon} alt="" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.display = 'none')} />}
+              <span>{host}</span>
+            </div>
+          )}
         </div>
       )}
       <div className="link-body">
         <div className="link-title">{item.title || host}</div>
         {item.desc && <div className="link-desc">{item.desc}</div>}
         <div className="link-host">
-          {item.favicon && <img src={item.favicon} alt="" onError={(e) => (e.currentTarget.style.display = 'none')} />}
+          {item.favicon && <img src={item.favicon} alt="" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.display = 'none')} />}
           <span>{host}</span>
         </div>
       </div>

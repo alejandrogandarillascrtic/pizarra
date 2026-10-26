@@ -33,7 +33,8 @@ Se pueden **arrastrar y soltar**, **pegar** (Ctrl+V) o subir desde el botón **S
 | Incrustados | YouTube, Vimeo, Loom, Figma, Google Docs/Sheets/Slides/Forms/Drive/Maps, Spotify, SoundCloud, X, TikTok, Instagram, Canva, CodePen, Miro, Airtable, Typeform, GIPHY, Calendly y código `<iframe>` | Contenido vivo; doble clic para interactuar |
 
 También: pegar capturas de pantalla, arrastrar imágenes desde otra pestaña, tomar fotos con la cámara del teléfono e insertar archivos desde una URL. Límite: 50 MB por archivo.
-- Funciona en móvil y tablet.
+
+Funciona en móvil y tablet.
 
 Atajos: pulsa `?` dentro de un tablero.
 

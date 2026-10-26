@@ -1000,7 +1000,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         zoomAt(r.width / 2, r.height / 2, 1)
         return
       }
-      if (e.shiftKey && e.key === '!') {
+      if (e.shiftKey && (e.key === '!' || e.code === 'Digit1')) {
         fitAll()
         return
       }
