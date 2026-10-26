@@ -128,7 +128,9 @@ export default async function handler(req: any, res: any) {
       r.body?.cancel()
       return res.json({ kind: 'video', url, mime: type.split(';')[0], name, size: len })
     }
-    if (!type.includes('html') && !type.includes('xml') && type && !type.startsWith('text/plain')) {
+    const fileExt = /\.(pdf|docx?|odt|rtf|xlsx?|ods|csv|tsv|pptx?|odp|zip|rar|7z|psd|ai|txt|md|json|mp3|wav|m4a|heic|heif)$/i.test(new URL(url).pathname)
+    const opaque = !type || type.startsWith('application/octet-stream') || type.startsWith('binary/')
+    if ((opaque && fileExt) || (!type.includes('html') && !type.includes('xml') && type && !type.startsWith('text/plain'))) {
       r.body?.cancel()
       const cd = r.headers.get('content-disposition') || ''
       const fn = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)/i)?.[1]

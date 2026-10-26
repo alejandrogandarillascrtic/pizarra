@@ -404,7 +404,17 @@ export interface Preview {
 export async function fetchPreview(url: string): Promise<Preview> {
   try {
     const r = await fetch(`/api/preview?url=${encodeURIComponent(url)}`)
-    if (r.ok) return (await r.json()) as Preview
+    if (r.ok) {
+      const p = (await r.json()) as Preview
+      // servidores que no declaran el tipo: decidir por la extensión
+      if (p.kind === 'page') {
+        const e = ext(new URL(p.url || url).pathname)
+        if (WEB_IMAGES.includes(e)) return { ...p, kind: 'image' }
+        if (VIDEO.includes(e)) return { ...p, kind: 'video' }
+        if (KIND_BY_EXT[e] || HEIC.includes(e)) return { ...p, kind: 'file', name: decodeURIComponent(new URL(p.url || url).pathname.split('/').pop() || 'archivo') }
+      }
+      return p
+    }
   } catch {
     /* sin API (desarrollo local) */
   }
