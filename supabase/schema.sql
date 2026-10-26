@@ -24,3 +24,12 @@ create policy "items read" on public.items for select to anon, authenticated usi
 create policy "items insert" on public.items for insert to anon, authenticated with check (true);
 create policy "items update" on public.items for update to anon, authenticated using (true) with check (true);
 create policy "items delete" on public.items for delete to anon, authenticated using (true);
+
+-- Archivos subidos al tablero (público para lectura, cualquiera puede subir)
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('uploads', 'uploads', true, 52428800)
+on conflict (id) do update set public = true, file_size_limit = 52428800;
+
+create policy "uploads insert" on storage.objects
+  for insert to anon, authenticated
+  with check (bucket_id = 'uploads');

@@ -58,7 +58,7 @@ export default function Home() {
 
       <section className="hero">
         <h1>Piensa en grande,<br /><span>juntos.</span></h1>
-        <p>Un tablero infinito para tu equipo: notas adhesivas, formas, conectores, marcos y lápiz, con cursores en vivo. Sin cuentas: comparte el enlace y listo.</p>
+        <p>Un tablero infinito para tu equipo: notas adhesivas, formas, conectores, marcos y lápiz, más imágenes, PDF, documentos, videos y enlaces. Todo con cursores en vivo. Sin cuentas: comparte el enlace y listo.</p>
       </section>
 
       <section>

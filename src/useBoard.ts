@@ -120,6 +120,16 @@ export function useBoard(boardId: string, me: Me) {
       if (undoRef.current.length > 300) undoRef.current.shift()
       redoRef.current = []
     }
+    // Los elementos que aún se están subiendo existen solo en este navegador
+    const shared: Patch = {}
+    let any = false
+    for (const k in patch) {
+      if (patch[k]?.uploading) continue
+      shared[k] = patch[k]
+      any = true
+    }
+    if (!any) return
+    patch = shared
     if (broadcast === 'throttle') {
       Object.assign(throttle.current.patch, patch)
       if (!throttle.current.t) {

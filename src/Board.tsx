@@ -9,6 +9,13 @@ import {
 } from './geometry'
 import { Icon } from './icons'
 import { rememberBoard } from './recent'
+import { MediaCtx } from './MediaView'
+import Viewer, { UrlDialog } from './Viewer'
+import {
+  MAX_BYTES, asUrl, classify, downloadUrl, embedFor, fetchPreview, fetchRemoteFile, heicToJpeg, hostOf, iframeSrc,
+  imageSize, isMedia, isOfficeViewable, isSheetImportable, keepsAspect, limitImage, loadPdf, officeThumbnail, pdfPageBlob,
+  sheetRows, textSnippet, uploadBlob, videoPoster, type EmbedInfo,
+} from './media'
 
 const DEFAULTS: Record<string, { w: number; h: number; color: string }> = {
   sticky: { w: 200, h: 200, color: STICKY_COLORS[0] },
@@ -74,6 +81,14 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
   const [toast, setToast] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
   const [help, setHelp] = useState(false)
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [viewerId, setViewerId] = useState<string | null>(null)
+  const [urlDialog, setUrlDialog] = useState(false)
+  const [uploadMenu, setUploadMenu] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [progress, setProgress] = useState<string | null>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const cameraInput = useRef<HTMLInputElement>(null)
   const vpRef = useRef<HTMLDivElement>(null)
   const drag = useRef<Drag | null>(null)
   const pointers = useRef(new Map<number, Pt>())
@@ -232,10 +247,417 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
 
   const selectedItems = () => selRef.current.map((id) => itemsRef.current[id]).filter(Boolean)
 
+  // ---------- medios: archivos, imágenes, URLs ----------
+  const viewCenter = () => {
+    const r = vpRef.current!.getBoundingClientRect()
+    return screenToWorld(r.width / 2, r.height / 2)
+  }
+
+  /** Tamaño en el tablero: se ajusta a lo que se ve en pantalla, como Miro. */
+  const fitSize = (w: number, h: number, cap = 640) => {
+    const r = vpRef.current!.getBoundingClientRect()
+    const max = Math.max(160, Math.min(cap / Math.max(camRef.current.z, 0.35), (Math.min(r.width, r.height) * 0.55) / camRef.current.z))
+    const s = Math.min(1, max / Math.max(w, h, 1))
+    return { w: Math.max(40, Math.round(w * s)), h: Math.max(30, Math.round(h * s)) }
+  }
+
+  /** Reparte varios elementos en una grilla centrada en `at`. */
+  const layout = (at: Pt, sizes: { w: number; h: number }[]) => {
+    const gap = 24
+    const cols = Math.min(sizes.length, sizes.length <= 4 ? 4 : Math.ceil(Math.sqrt(sizes.length)))
+    const rows: { w: number; h: number }[][] = []
+    sizes.forEach((s, k) => (rows[Math.floor(k / cols)] ||= []).push(s))
+    const rowW = rows.map((r) => r.reduce((a, s) => a + s.w, 0) + gap * (r.length - 1))
+    const rowH = rows.map((r) => Math.max(...r.map((s) => s.h)))
+    const totalH = rowH.reduce((a, b) => a + b, 0) + gap * (rows.length - 1)
+    const out: Pt[] = []
+    let y = at.y - totalH / 2
+    rows.forEach((r, ri) => {
+      let x = at.x - rowW[ri] / 2
+      r.forEach((s) => {
+        out.push({ x, y: y + (rowH[ri] - s.h) / 2 })
+        x += s.w + gap
+      })
+      y += rowH[ri] + gap
+    })
+    return out
+  }
+
+  /** Busca, en espiral alrededor de `at`, un hueco libre para un bloque de w×h (centro devuelto). */
+  const freeSpot = (at: Pt, w: number, h: number): Pt => {
+    const all = Object.values(itemsRef.current).filter((i) => !i.uploading).map((i) => bounds(i, itemsRef.current))
+    const pad = 32
+    const hits = (c: Pt) => {
+      const r = { x: c.x - w / 2 - pad, y: c.y - h / 2 - pad, w: w + pad * 2, h: h + pad * 2 }
+      return all.some((b) => intersects(r, b))
+    }
+    if (!hits(at)) return at
+    const sx = w + pad, sy = h + pad
+    for (let ring = 1; ring <= 6; ring++) {
+      const cands: Pt[] = []
+      for (let i = -ring; i <= ring; i++)
+        for (let j = -ring; j <= ring; j++)
+          if (Math.max(Math.abs(i), Math.abs(j)) === ring) cands.push({ x: at.x + i * sx, y: at.y + j * sy })
+      cands.sort((a, b) => Math.hypot(a.x - at.x, a.y - at.y) - Math.hypot(b.x - at.x, b.y - at.y))
+      const ok = cands.find((c) => !hits(c))
+      if (ok) return ok
+    }
+    return at
+  }
+
+  /** Lleva la cámara a un punto si quedó fuera de la vista. */
+  const reveal = (c: Pt) => {
+    const r = vpRef.current!.getBoundingClientRect()
+    const cam = camRef.current
+    const sx = c.x * cam.z + cam.x, sy = c.y * cam.z + cam.y
+    if (sx < 80 || sy < 80 || sx > r.width - 80 || sy > r.height - 80) setCam({ ...cam, x: r.width / 2 - c.x * cam.z, y: r.height / 2 - c.y * cam.z })
+  }
+
+  const finishItem = (id: string, updates: Partial<Item>) => {
+    const cur = itemsRef.current[id]
+    if (!cur) return // lo borraron mientras subía
+    const done: Item = { ...cur, ...updates }
+    delete done.uploading
+    apply({ [id]: done }, { history: { [id]: null } })
+  }
+  const dropItem = (id: string) => apply({ [id]: null }, { persist: false, broadcast: false, history: false })
+
+  const addFiles = async (files: File[], at: Pt, free = false) => {
+    const ok = files.filter((f) => {
+      if (f.size > MAX_BYTES) {
+        flash(`"${f.name}" supera el límite de 50 MB`)
+        return false
+      }
+      return true
+    }).slice(0, 40)
+    if (!ok.length) return
+
+    // 1) marcadores inmediatos con vista previa local
+    const plans = await Promise.all(
+      ok.map(async (file) => {
+        const c = classify(file)
+        let size = { w: 300, h: 220 }
+        let local: string | undefined
+        if (c.cls === 'image') {
+          local = URL.createObjectURL(file)
+          const d = await imageSize(local)
+          size = fitSize(d.w, d.h)
+        } else if (c.cls === 'heic') size = fitSize(800, 600)
+        else if (c.cls === 'video') size = fitSize(640, 360)
+        else if (c.kind === 'pdf') size = { w: 320, h: 500 }
+        else if (c.kind === 'audio') size = { w: 300, h: 190 }
+        else size = { w: 280, h: 300 }
+        return { file, c, size, local }
+      }),
+    )
+    if (free) {
+      const tmp = layout({ x: 0, y: 0 }, plans.map((p) => p.size))
+      const b = unionRect(tmp.map((q, k) => ({ x: q.x, y: q.y, w: plans[k].size.w, h: plans[k].size.h })))!
+      at = freeSpot(at, b.w, b.h)
+      reveal(at)
+    }
+    const pos = layout(at, plans.map((p) => p.size))
+    let { max } = zRange()
+    const patch: Patch = {}
+    const ids: string[] = []
+    plans.forEach((p, k) => {
+      const id = nanoid(10)
+      ids.push(id)
+      const type: Item['type'] = p.c.cls === 'image' || p.c.cls === 'heic' ? 'image' : p.c.cls === 'video' ? 'video' : 'file'
+      patch[id] = {
+        id, type, x: pos[k].x, y: pos[k].y, w: p.size.w, h: p.size.h, z: ++max, color: '#ffffff',
+        name: p.file.name, mime: p.file.type, size: p.file.size, fileKind: p.c.kind, src: p.local, uploading: true, author: me.name,
+      }
+    })
+    apply(patch, { persist: false, broadcast: false, history: false })
+    setSelected(ids)
+    setTool('select')
+
+    // 2) subida y miniaturas en paralelo
+    let failed = 0
+    await Promise.all(
+      plans.map(async (p, k) => {
+        const id = ids[k]
+        try {
+          const up = await processFile(p.file, p.c, id)
+          finishItem(id, up)
+        } catch (err) {
+          console.error(err)
+          failed++
+          dropItem(id)
+        } finally {
+          if (p.local) setTimeout(() => URL.revokeObjectURL(p.local!), 30000)
+        }
+      }),
+    )
+    if (failed) flash(`No se pudo${failed > 1 ? `ieron subir ${failed} archivos` : ' subir un archivo'}`)
+    else flash(ok.length === 1 ? 'Archivo agregado' : `${ok.length} archivos agregados`)
+  }
+
+  const processFile = async (input: File, c: ReturnType<typeof classify>, id: string): Promise<Partial<Item>> => {
+    let file = input
+    if (c.cls === 'heic') {
+      file = await heicToJpeg(file)
+      c = { cls: 'image' }
+    }
+    if (c.cls === 'image') {
+      file = await limitImage(file)
+      const src = await uploadBlob(boardId, file, file.name)
+      if (file !== input) {
+        // convertida (HEIC) o reducida: recalcular proporción conservando el ancho actual
+        const d = await imageSize(src)
+        const cur = itemsRef.current[id]
+        const w = cur?.w || fitSize(d.w, d.h).w
+        return { src, name: file.name, mime: file.type, size: file.size, w, h: Math.round((w * d.h) / Math.max(d.w, 1)) }
+      }
+      return { src, mime: file.type, size: file.size }
+    }
+    if (c.cls === 'video') {
+      const poster = await videoPoster(file)
+      const [src, thumb] = await Promise.all([
+        uploadBlob(boardId, file, file.name),
+        poster.blob ? uploadBlob(boardId, poster.blob, `${file.name}.jpg`, 'image/jpeg') : Promise.resolve(undefined),
+      ])
+      const s = fitSize(poster.w, poster.h)
+      return { src, thumb, w: s.w, h: s.h }
+    }
+    // documentos
+    const out: Partial<Item> = {}
+    const srcP = uploadBlob(boardId, file, file.name)
+    if (c.kind === 'pdf') {
+      const doc = await loadPdf(await file.arrayBuffer(), `local-${id}`)
+      const first = await pdfPageBlob(doc, 1, 900)
+      out.pages = doc.numPages
+      out.page = 1
+      out.thumb = await uploadBlob(boardId, first.blob, `${file.name}-p1.png`, 'image/png')
+      const w = 320
+      out.w = w
+      out.h = Math.round(Math.min(w * 2.2, (w * first.h) / first.w)) + 52
+    } else {
+      const [cover, snippet] = await Promise.all([officeThumbnail(file), textSnippet(file)])
+      if (snippet) out.snippet = snippet
+      // Word: el texto real es mejor vista previa; presentaciones y hojas: la portada del archivo
+      if (cover && !(c.kind === 'doc' && snippet)) {
+        const local = URL.createObjectURL(cover)
+        const d = await imageSize(local)
+        URL.revokeObjectURL(local)
+        out.thumb = await uploadBlob(boardId, cover, `${file.name}-cover.${cover.type === 'image/png' ? 'png' : 'jpg'}`, cover.type)
+        out.w = 280
+        out.h = Math.round(Math.min(380, (280 * d.h) / Math.max(d.w, 1))) + 52
+      }
+    }
+    out.src = await srcP
+    return out
+  }
+
+  const addEmbed = (info: EmbedInfo, url: string, at: Pt, free = false) => {
+    const s = fitSize(info.w, info.h + 36, 900)
+    if (free) {
+      at = freeSpot(at, s.w, s.h)
+      reveal(at)
+    }
+    const id = nanoid(10)
+    const it: Item = {
+      id, type: 'embed', x: at.x - s.w / 2, y: at.y - s.h / 2, w: s.w, h: s.h, z: zRange().max + 1, color: '#ffffff',
+      url, embed: info.embed, provider: info.provider, favicon: faviconFor(url), author: me.name,
+    }
+    apply({ [id]: it })
+    setSelected([id])
+    setTool('select')
+    // título real en segundo plano
+    fetchPreview(url).then((p) => {
+      const cur = itemsRef.current[id]
+      if (cur && p.title) apply({ [id]: { ...cur, title: p.title, favicon: p.favicon || cur.favicon } }, { history: false })
+    })
+    return true
+  }
+
+  const addUrl = async (raw: string, at: Pt, free = false): Promise<boolean> => {
+    const ifr = iframeSrc(raw)
+    if (ifr) return addEmbed(ifr, ifr.embed, at, free)
+    const url = asUrl(raw)
+    if (!url) return false
+    const emb = embedFor(url)
+    if (emb) return addEmbed(emb, url, at, free)
+    if (free) {
+      at = freeSpot(at, 360, 320)
+      reveal(at)
+    }
+
+    // tarjeta provisoria mientras se obtiene la vista previa
+    const id = nanoid(10)
+    const host = hostOf(url)
+    apply(
+      { [id]: { id, type: 'link', x: at.x - 180, y: at.y - 64, w: 360, h: 128, z: zRange().max + 1, color: '#ffffff', url, title: host, favicon: faviconFor(url), uploading: true } },
+      { persist: false, broadcast: false, history: false },
+    )
+    setSelected([id])
+    setTool('select')
+    const p = await fetchPreview(url)
+    const cur = itemsRef.current[id]
+    if (!cur) return true
+    const center = { x: cur.x + cur.w / 2, y: cur.y + cur.h / 2 }
+
+    if (p.kind === 'image' || p.kind === 'file') {
+      const name = p.name || decodeURIComponent(new URL(p.url || url).pathname.split('/').pop() || 'archivo')
+      const f = await fetchRemoteFile(p.url || url, name)
+      if (f) {
+        dropItem(id)
+        await addFiles([f], center)
+        return true
+      }
+      if (p.kind === 'image') {
+        const d = await imageSize(p.url || url)
+        const s = fitSize(d.w, d.h)
+        finishItem(id, { type: 'image', src: p.url || url, name, x: center.x - s.w / 2, y: center.y - s.h / 2, w: s.w, h: s.h })
+        return true
+      }
+      finishItem(id, { title: name, desc: 'Archivo externo · doble clic para abrir', favicon: p.favicon || cur.favicon })
+      return true
+    }
+    if (p.kind === 'video') {
+      const s = fitSize(640, 360)
+      finishItem(id, { type: 'video', src: p.url || url, name: hostOf(url), x: center.x - s.w / 2, y: center.y - s.h / 2, w: s.w, h: s.h })
+      return true
+    }
+    const hasImg = !!p.image
+    const h = (hasImg ? 188 : 0) + (p.description ? 128 : 96)
+    finishItem(id, {
+      title: p.title || host, desc: p.description, thumb: p.image, favicon: p.favicon || cur.favicon, provider: p.site,
+      url: p.url || url, h, y: center.y - h / 2,
+    })
+    return true
+  }
+
+  const faviconFor = (url: string) => {
+    try {
+      return `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=64`
+    } catch {
+      return undefined
+    }
+  }
+
+  const rotateImage = (it: Item) => {
+    const cx = it.x + it.w / 2, cy = it.y + it.h / 2
+    apply({ [it.id]: { ...it, rotation: ((it.rotation || 0) + 90) % 360, w: it.h, h: it.w, x: cx - it.h / 2, y: cy - it.w / 2 } })
+  }
+
+  const extractPages = async (it: Item) => {
+    if (!it.src) return
+    try {
+      setProgress('Preparando páginas…')
+      const doc = await loadPdf(it.src)
+      const n = Math.min(doc.numPages, 80)
+      const cols = Math.min(n, 5)
+      const gap = 24
+      const w = it.w
+      let { max } = zRange()
+      const base = (it.name || 'pagina').replace(/\.pdf$/i, '')
+      const ids: string[] = []
+      let x = it.x, y = it.y + it.h + 40, rowH = 0
+      for (let k = 1; k <= n; k++) {
+        setProgress(`Extrayendo página ${k} de ${n}…`)
+        const pg = await pdfPageBlob(doc, k, 1400)
+        const src = await uploadBlob(boardId, pg.blob, `${base}-p${k}.png`, 'image/png')
+        const h = Math.round((w * pg.h) / pg.w)
+        const id = nanoid(10)
+        ids.push(id)
+        apply({ [id]: { id, type: 'image', x, y, w, h, z: ++max, color: '#ffffff', src, name: `${base} · p. ${k}`, mime: 'image/png', author: me.name } })
+        rowH = Math.max(rowH, h)
+        if (k % cols === 0) {
+          x = it.x
+          y += rowH + gap
+          rowH = 0
+        } else x += w + gap
+      }
+      setSelected(ids)
+      flash(`${n} páginas extraídas${doc.numPages > n ? ` (de ${doc.numPages})` : ''}`)
+    } catch (e) {
+      console.error(e)
+      flash('No se pudieron extraer las páginas')
+    } finally {
+      setProgress(null)
+    }
+  }
+
+  const sheetToStickies = async (it: Item) => {
+    if (!it.src) return
+    try {
+      setProgress('Leyendo la hoja…')
+      const blob = await (await fetch(it.src)).blob()
+      const rows = (await sheetRows(blob, 200)).map((r) => r.filter(Boolean).join('\n')).filter(Boolean)
+      if (!rows.length) return flash('La hoja está vacía')
+      const cols = Math.min(6, rows.length)
+      let { max } = zRange()
+      const patch: Patch = {}
+      rows.forEach((text, k) => {
+        const id = nanoid(10)
+        patch[id] = {
+          id, type: 'sticky', x: it.x + (k % cols) * 220, y: it.y + it.h + 40 + Math.floor(k / cols) * 220, w: 200, h: 200,
+          z: ++max, color: STICKY_COLORS[k % 6], text, author: me.name,
+        }
+      })
+      apply(patch)
+      setSelected(Object.keys(patch))
+      flash(`${rows.length} notas creadas`)
+    } catch (e) {
+      console.error(e)
+      flash('No se pudo leer la hoja de cálculo')
+    } finally {
+      setProgress(null)
+    }
+  }
+
+  const openItem = (it: Item) => {
+    if (it.type === 'link') window.open(it.url, '_blank', 'noopener')
+    else if (it.type === 'embed' || it.type === 'video' || (it.type === 'file' && it.fileKind === 'audio')) setActiveId(it.id)
+    else if (it.type === 'image' || it.type === 'file') setViewerId(it.id)
+  }
+
+  const setPage = useCallback(
+    (id: string, page: number) => {
+      const it = itemsRef.current[id]
+      if (it) apply({ [id]: { ...it, page } })
+    },
+    [apply, itemsRef],
+  )
+  const mediaApi = useMemo(() => ({ activeId, setPage }), [activeId, setPage])
+
+  const onDragOver = (e: React.DragEvent) => {
+    const types = [...e.dataTransfer.types]
+    if (!types.includes('Files') && !types.includes('text/uri-list') && !types.includes('text/plain')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    if (!dragOver) setDragOver(true)
+  }
+  const onDragLeave = (e: React.DragEvent) => {
+    if (!e.relatedTarget || !vpRef.current!.contains(e.relatedTarget as Node)) setDragOver(false)
+  }
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const at = evToWorld(e)
+    const files = [...e.dataTransfer.files]
+    if (files.length) {
+      addFiles(files, at)
+      return
+    }
+    const html = e.dataTransfer.getData('text/html')
+    const imgSrc = html.match(/<img[^>]+src=["'](https?:[^"']+)["']/i)?.[1]
+    const uri = (e.dataTransfer.getData('text/uri-list') || '').split('\n').find((l) => l && !l.startsWith('#'))
+    const text = e.dataTransfer.getData('text/plain')
+    const target = imgSrc || uri || text
+    if (target) addUrl(target, at).then((ok) => !ok && text && flash('Solo se pueden soltar archivos o enlaces'))
+  }
+
   // ---------- puntero ----------
   const onPointerDown = (e: React.PointerEvent) => {
     const target = e.target as HTMLElement
-    if (target.closest('textarea, input, .ctx')) return
+    if (target.closest('textarea, input, .ctx, .ctl')) return
+    const activeEl = target.closest('.item.active')
+    if (activeEl && !target.closest('[data-id]')) return // controles del video / iframe activo
+    if (activeId && !activeEl) setActiveId(null)
+    if (uploadMenu) setUploadMenu(false)
     vpRef.current!.setPointerCapture(e.pointerId)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
 
@@ -345,7 +767,7 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         if (d.handle.includes('n')) y1 += dy
         if (d.handle.includes('s')) y2 += dy
         let w = Math.max(30, x2 - x1), h = Math.max(24, y2 - y1)
-        if (e.shiftKey || o.type === 'sticky') {
+        if (e.shiftKey || o.type === 'sticky' || keepsAspect(o)) {
           const ratio = o.w / o.h
           if (w / h > ratio) h = w / ratio
           else w = h * ratio
@@ -482,11 +904,17 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
   }
 
   const onDoubleClick = (e: React.MouseEvent) => {
-    const target = e.target as HTMLElement
-    if (target.closest('textarea, input, .ctx')) return
+    // con pointer capture el navegador entrega el dblclick al lienzo: buscamos el elemento real bajo el cursor
+    const target = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement) || (e.target as HTMLElement)
+    if (target.closest('textarea, input, .ctx, .ctl')) return
     const id = target.closest('[data-id]')?.getAttribute('data-id')
     if (id && itemsRef.current[id]) {
       setSelected([id])
+      const it = itemsRef.current[id]
+      if (isMedia(it)) {
+        if (!it.uploading) openItem(it)
+        return
+      }
       startEdit(id)
     } else if (toolRef.current === 'select') {
       const p = evToWorld(e)
@@ -583,13 +1011,21 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         return
       }
       if (e.key === 'Escape') {
-        setSelected([])
+        if (activeId) setActiveId(null)
+        else setSelected([])
         setTool('select')
+        setUploadMenu(false)
         return
       }
       if (e.key === 'Enter' && selRef.current.length === 1) {
         e.preventDefault()
-        startEdit(selRef.current[0])
+        const it = itemsRef.current[selRef.current[0]]
+        if (it && isMedia(it)) openItem(it)
+        else startEdit(selRef.current[0])
+        return
+      }
+      if (e.key.toLowerCase() === 'u') {
+        fileInput.current?.click()
         return
       }
       if (e.key.startsWith('Arrow') && selRef.current.length) {
@@ -630,6 +1066,16 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
       e.preventDefault()
       const r = vpRef.current!.getBoundingClientRect()
       const mid = screenToWorld(r.width / 2, r.height / 2)
+      // capturas de pantalla, imágenes copiadas y archivos copiados del explorador
+      const files = [...(e.clipboardData?.files || [])]
+      if (files.length) {
+        addFiles(files, mid, true)
+        return
+      }
+      if (!text.trim().startsWith('{') && (iframeSrc(text) || asUrl(text))) {
+        addUrl(text, mid, true)
+        return
+      }
       try {
         const data = JSON.parse(text)
         if (data?.pizarra && Array.isArray(data.items)) {
@@ -793,7 +1239,11 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
       >
+        <MediaCtx.Provider value={mediaApi}>
         <div className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.z})` }}>
           {sorted.map((i) => (
             <ItemView
@@ -808,6 +1258,16 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
           ))}
           {draft && <ItemView item={draft} items={items} editing={false} hover={false} onText={noop} onDone={noop} />}
         </div>
+        </MediaCtx.Provider>
+        {dragOver && (
+          <div className="drop-zone">
+            <div>
+              <Icon name="upload" size={34} />
+              <strong>Suelta para agregar al tablero</strong>
+              <span>Imágenes, PDF, Word, Excel, PowerPoint, videos, audio, enlaces…</span>
+            </div>
+          </div>
+        )}
 
         {/* capa de selección en coordenadas de pantalla */}
         <div className="overlay">
@@ -844,13 +1304,44 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
             const top = Math.max(64, r.y - 58)
             const left = Math.min(Math.max(12, r.x + r.w / 2), (vpRef.current?.clientWidth || 800) - 12)
             const textual = selItems.some((i) => isTextual(i.type) && i.type !== 'frame')
+            const media = selItems.some(isMedia)
+            const m = single && isMedia(single) && !single.uploading ? single : null
             return (
               <div className="ctx" style={{ top, left }} onPointerDown={(e) => e.stopPropagation()}>
-                <div className="swatches">
+                {m && (
+                  <>
+                    {(m.type === 'image' || (m.type === 'file' && m.fileKind !== 'audio')) && (
+                      <button className="ib wide" title="Ver (doble clic)" onClick={() => openItem(m)}><Icon name="eye" /> Ver</button>
+                    )}
+                    {(m.type === 'video' || m.fileKind === 'audio') && (
+                      <button className="ib wide" title="Reproducir (doble clic)" onClick={() => openItem(m)}><Icon name="play" size={16} /> Reproducir</button>
+                    )}
+                    {m.type === 'embed' && (
+                      <button className="ib wide" title="Interactuar (doble clic)" onClick={() => openItem(m)}>Interactuar</button>
+                    )}
+                    {m.type === 'image' && (
+                      <button className="ib" title="Rotar 90°" onClick={() => rotateImage(m)}><Icon name="rotate" /></button>
+                    )}
+                    {m.fileKind === 'pdf' && (m.pages || 1) > 1 && (
+                      <button className="ib wide" title="Extraer páginas como imágenes" onClick={() => extractPages(m)}><Icon name="pages" /> Extraer páginas</button>
+                    )}
+                    {m.type === 'file' && isSheetImportable(m.name) && (
+                      <button className="ib wide" title="Crear una nota por fila" onClick={() => sheetToStickies(m)}><Icon name="notes" /> A notas</button>
+                    )}
+                    {(m.type === 'link' || m.type === 'embed') && (
+                      <a className="ib" title="Abrir en una pestaña nueva" href={m.url} target="_blank" rel="noreferrer"><Icon name="open" /></a>
+                    )}
+                    {m.src && m.type !== 'link' && m.type !== 'embed' && (
+                      <a className="ib" title="Descargar" href={downloadUrl(m.src, m.name)} target="_blank" rel="noreferrer"><Icon name="download" /></a>
+                    )}
+                    <span className="sep" />
+                  </>
+                )}
+                {!media && <div className="swatches">
                   {palette.map((c) => (
                     <button key={c} className={`sw${selItems[0].color === c ? ' on' : ''}`} style={{ background: c }} onClick={() => recolor(c)} title={c} />
                   ))}
-                </div>
+                </div>}
                 {textual && (
                   <>
                     <span className="sep" />
@@ -920,6 +1411,25 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
             <Icon name={t.id} />
           </button>
         ))}
+        <div className="upload-wrap">
+          <button className={`tool${uploadMenu ? ' on' : ''}`} title="Subir archivo o enlace (U)" onClick={() => setUploadMenu((v) => !v)}>
+            <Icon name="upload" />
+          </button>
+          {uploadMenu && (
+            <div className="upload-menu">
+              <button onClick={() => { setUploadMenu(false); fileInput.current?.click() }}>
+                <Icon name="file" /> <span><strong>Desde tu dispositivo</strong><small>Imágenes, PDF, Office, video, audio… (máx. 50 MB)</small></span>
+              </button>
+              <button onClick={() => { setUploadMenu(false); setUrlDialog(true) }}>
+                <Icon name="link" /> <span><strong>Desde una URL</strong><small>Páginas, YouTube, Figma, Google Docs, Maps, archivos…</small></span>
+              </button>
+              <button onClick={() => { setUploadMenu(false); cameraInput.current?.click() }}>
+                <Icon name="camera" /> <span><strong>Tomar una foto</strong><small>Con la cámara del teléfono o tablet</small></span>
+              </button>
+              <p>También puedes <b>arrastrar</b> archivos al tablero o <b>pegar</b> (Ctrl+V) imágenes y enlaces.</p>
+            </div>
+          )}
+        </div>
         <span className="hsep" />
         <button className="tool" title="Deshacer (Ctrl+Z)" onClick={undo}><Icon name="undo" /></button>
         <button className="tool" title="Rehacer (Ctrl+Shift+Z)" onClick={redo}><Icon name="redo" /></button>
@@ -948,11 +1458,45 @@ export default function Board({ boardId, me, setMe }: { boardId: string; me: Me;
       {status === 'ready' && sorted.length === 0 && (
         <div className="empty-hint">
           <strong>Tablero vacío</strong>
-          Doble clic para una nota · elige una herramienta a la izquierda · pega texto con Ctrl+V
+          Doble clic para una nota · arrastra imágenes, PDF o documentos · pega enlaces con Ctrl+V
         </div>
       )}
-      {toast && <div className="toast">{toast}</div>}
+      {progress && <div className="toast progress"><span className="spinner light" /> {progress}</div>}
+      {!progress && toast && <div className="toast">{toast}</div>}
       {help && <Help onClose={() => setHelp(false)} />}
+      {viewerId && items[viewerId] && <Viewer item={items[viewerId]} onClose={() => setViewerId(null)} />}
+      {urlDialog && (
+        <UrlDialog
+          onClose={() => setUrlDialog(false)}
+          onSubmit={(u) => {
+            setUrlDialog(false)
+            addUrl(u, viewCenter(), true).then((ok) => !ok && flash('Ese texto no parece un enlace válido'))
+          }}
+        />
+      )}
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const f = [...(e.target.files || [])]
+          e.target.value = ''
+          if (f.length) addFiles(f, viewCenter(), true)
+        }}
+      />
+      <input
+        ref={cameraInput}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        hidden
+        onChange={(e) => {
+          const f = [...(e.target.files || [])]
+          e.target.value = ''
+          if (f.length) addFiles(f, viewCenter(), true)
+        }}
+      />
     </div>
   )
 }
@@ -981,6 +1525,10 @@ function Help({ onClose }: { onClose: () => void }) {
     ['Supr / Retroceso', 'Eliminar'],
     ['Shift+1 · Ctrl+0', 'Ajustar a la pantalla · zoom 100%'],
     ['Pegar texto', 'Crea una nota por línea'],
+    ['Arrastrar archivos', 'Imágenes, PDF, Office, video, audio…'],
+    ['Pegar imagen / enlace', 'Captura de pantalla, URL o código <iframe>'],
+    ['U', 'Subir archivo desde el dispositivo'],
+    ['Doble clic en archivo', 'Ver, reproducir o interactuar'],
   ]
   return (
     <div className="modal-bg" onPointerDown={onClose}>

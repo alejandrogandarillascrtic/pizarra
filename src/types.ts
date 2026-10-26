@@ -7,6 +7,14 @@ export type ItemType =
   | 'frame'
   | 'connector'
   | 'pen'
+  | 'image'
+  | 'file'
+  | 'video'
+  | 'link'
+  | 'embed'
+
+/** Subtipo de archivo para tarjetas de documento */
+export type FileKind = 'pdf' | 'doc' | 'sheet' | 'slides' | 'text' | 'archive' | 'audio' | 'design' | 'other'
 
 export interface End {
   id?: string
@@ -33,6 +41,24 @@ export interface Item {
   points?: number[]
   stroke?: number
   author?: string
+  // medios (image / file / video / link / embed)
+  src?: string // URL pública del archivo
+  thumb?: string // miniatura (primera página de PDF, portada de Office, fotograma de video)
+  name?: string
+  mime?: string
+  size?: number
+  fileKind?: FileKind
+  pages?: number // PDF: total de páginas
+  page?: number // PDF: página visible (1..pages)
+  rotation?: number // 0 | 90 | 180 | 270 (imágenes)
+  snippet?: string // texto de vista previa (txt, csv, docx…)
+  url?: string // link / embed: URL original
+  embed?: string // embed: URL del iframe
+  provider?: string
+  title?: string
+  desc?: string
+  favicon?: string
+  uploading?: boolean // solo local, mientras sube
 }
 
 export type Patch = Record<string, Item | null>

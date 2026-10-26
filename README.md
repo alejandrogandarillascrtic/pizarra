@@ -14,6 +14,25 @@ Whiteboard colaborativo en tiempo real, open source (MIT). Un lienzo infinito pa
 - Copiar y pegar entre tableros; pegar texto crea una nota por línea.
 - **Plantillas**: lluvia de ideas, retrospectiva, kanban y diagrama de flujo.
 - Exportar / importar el tablero en JSON.
+
+### Archivos, imágenes y enlaces (como en Miro)
+
+Se pueden **arrastrar y soltar**, **pegar** (Ctrl+V) o subir desde el botón **Subir** (`U`):
+
+| Tipo | Formatos | En el tablero |
+|---|---|---|
+| Imágenes | JPG, PNG, GIF (animado), WebP, SVG, BMP, AVIF, **HEIC/HEIF** (se convierte a JPG) | Imagen redimensionable con proporción fija, rotar 90°, visor a pantalla completa |
+| PDF | PDF de cualquier tamaño | Tarjeta con la portada y **paginador** compartido (‹ 1/12 ›), visor de todas las páginas y **Extraer páginas** como imágenes |
+| Documentos | DOC, DOCX, ODT, RTF | Tarjeta con el texto del documento; visor con Office Online |
+| Hojas de cálculo | XLS, XLSX, ODS, CSV, TSV | Vista previa de filas, visor y **A notas** (una nota por fila) |
+| Presentaciones | PPT, PPTX, ODP | Portada de la primera diapositiva y visor con Office Online |
+| Video | MP4, MOV, WebM | Fotograma de portada; doble clic para reproducir en el tablero |
+| Audio | MP3, WAV, M4A, OGG… | Reproductor en la tarjeta |
+| Otros | ZIP, PSD, AI, TXT, JSON… | Tarjeta de archivo con descarga |
+| Enlaces | Cualquier URL | **Tarjeta con imagen, título y descripción** (Open Graph) |
+| Incrustados | YouTube, Vimeo, Loom, Figma, Google Docs/Sheets/Slides/Forms/Drive/Maps, Spotify, SoundCloud, X, TikTok, Instagram, Canva, CodePen, Miro, Airtable, Typeform, GIPHY, Calendly y código `<iframe>` | Contenido vivo; doble clic para interactuar |
+
+También: pegar capturas de pantalla, arrastrar imágenes desde otra pestaña, tomar fotos con la cámara del teléfono e insertar archivos desde una URL. Límite: 50 MB por archivo.
 - Funciona en móvil y tablet.
 
 Atajos: pulsa `?` dentro de un tablero.
@@ -21,7 +40,9 @@ Atajos: pulsa `?` dentro de un tablero.
 ## Stack
 
 - React 18 + TypeScript + Vite (sin librerías de canvas: DOM + SVG propios).
-- [Supabase](https://supabase.com): Postgres para guardar los tableros y Realtime (broadcast + presence) para la colaboración.
+- [Supabase](https://supabase.com): Postgres para guardar los tableros, Storage para los archivos y Realtime (broadcast + presence) para la colaboración.
+- Funciones de Vercel (`api/`): vista previa de enlaces (`/api/preview`) y descarga de archivos remotos (`/api/file`), ambas con protección contra accesos a redes internas (SSRF).
+- pdf.js (PDF), JSZip (portadas y texto de Office), SheetJS (hojas de cálculo) y heic2any (fotos de iPhone), cargados solo cuando se necesitan.
 - Desplegado en Vercel.
 
 ## Desarrollo local

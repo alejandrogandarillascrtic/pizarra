@@ -1,6 +1,8 @@
 import { memo } from 'react'
 import type { Item } from './types'
 import { autoFont, connectorPoints, darken, isDark, penPath } from './geometry'
+import { isMedia } from './media'
+import { MediaView } from './MediaView'
 
 interface Props {
   item: Item
@@ -58,6 +60,7 @@ function Label({ item }: { item: Item }) {
 }
 
 export const ItemView = memo(function ItemView({ item, items, editing, hover, onText, onDone }: Props) {
+  if (isMedia(item)) return <MediaView item={item} hover={hover} />
   const base: React.CSSProperties = { left: item.x, top: item.y, width: item.w, height: item.h, zIndex: item.z }
   const cls = `item item-${item.type}${hover ? ' hover' : ''}`
 

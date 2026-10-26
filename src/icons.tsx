@@ -20,6 +20,17 @@ const P: Record<string, React.ReactNode> = {
   dots: <><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="12" cy="12" r="1.2" fill="currentColor" /><circle cx="19" cy="12" r="1.2" fill="currentColor" /></>,
   fit: <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />,
   plus: <path d="M12 5v14M5 12h14" />,
+  upload: <><path d="M12 15V4" /><path d="M7 9l5-5 5 5" /><path d="M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4" /></>,
+  download: <><path d="M12 4v11" /><path d="M7 10l5 5 5-5" /><path d="M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4" /></>,
+  link: <><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1" /></>,
+  rotate: <><path d="M20 11a8 8 0 10-2.3 5.7" /><path d="M20 4v7h-7" /></>,
+  open: <><path d="M14 4h6v6" /><path d="M20 4l-9 9" /><path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" /></>,
+  eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>,
+  pages: <><rect x="3" y="3" width="8" height="10" rx="1" /><rect x="13" y="3" width="8" height="10" rx="1" /><rect x="3" y="15" width="8" height="6" rx="1" /><rect x="13" y="15" width="8" height="6" rx="1" /></>,
+  notes: <><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4z" /><path d="M13 13h7v4l-3 3h-4z" /></>,
+  play: <path d="M7 4l13 8-13 8z" fill="currentColor" />,
+  camera: <><path d="M4 7h3l2-3h6l2 3h3v13H4z" /><circle cx="12" cy="13" r="4" /></>,
+  file: <><path d="M6 2.5h8l4.5 4.5v14.5H6z" /><path d="M14 2.5V7h4.5" /></>,
 }
 
 export function Icon({ name, size = 20 }: { name: string; size?: number }) {
